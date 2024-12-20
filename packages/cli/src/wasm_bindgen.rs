@@ -1,3 +1,4 @@
+use crate::Result;
 use anyhow::{anyhow, Context};
 use flate2::read::GzDecoder;
 use std::{
@@ -7,6 +8,9 @@ use std::{
 use tar::Archive;
 use tempfile::TempDir;
 use tokio::{fs, process::Command};
+
+#[cfg(feature = "no-downloads")]
+use crate::Error;
 
 pub(crate) struct WasmBindgen {
     version: String,
@@ -83,11 +87,54 @@ impl WasmBindgen {
         Ok(())
     }
 
-    /// Verify that the required wasm-bindgen version is installed.
-    pub async fn verify_install(version: &str) -> anyhow::Result<bool> {
+    /// Verify that the required wasm-bindgen version is installed in the tool directory.
+    #[cfg(not(feature = "no-downloads"))]
+    pub async fn verify_install(version: &str) -> Result<()> {
+        tracing::info!("Verifying wasm-bindgen-cli@{version} is installed in the tool directory");
+
         let binary_name = Self::installed_bin_name(version);
         let path = Self::install_dir().await?.join(binary_name);
-        Ok(path.exists())
+
+        if !path.exists() {
+            Self::install(version)
+                .await
+                .context("failed to install wasm-bindgen-cli")?;
+        }
+
+        Ok(())
+    }
+
+    /// Verify that the required wasm-bindgen version is installed in the path.
+    #[cfg(feature = "no-downloads")]
+    pub async fn verify_install(version: &str) -> Result<()> {
+        tracing::info!("Verifying wasm-bindgen-cli@{version} is installed in the path");
+
+        let binary_name = Self::installed_bin_name(version);
+        let path = which::which(binary_name).is_ok();
+
+        // Missing.
+        if !path {
+            return Err(Error::Other(anyhow!("Missing wasm-bindgen-cli@{version}")));
+        }
+
+        // Wrong version.
+        let output = Command::new("wasm-bindgen")
+            .args(["--version"])
+            .output()
+            .await
+            .context("Failed to check wasm-bindgen-cli version")?;
+
+        let stdout = String::from_utf8(output.stdout)
+            .context("Failed to extract wasm-bindgen-cli output")?;
+
+        let installed_version = stdout.trim_start_matches("wasm-bindgen").trim();
+        if installed_version != version {
+            return Err(Error::Other(anyhow!(
+                "Wrong wasm-bindgen-cli version installed: {installed_version} vs {version}"
+            )));
+        }
+
+        Ok(())
     }
 
     /// Install the specified wasm-bingen version.
@@ -242,7 +289,8 @@ impl WasmBindgen {
         Ok(bindgen_dir)
     }
 
-    /// Get the name of a potentially installed wasm-bindgen binary.
+    /// Get the name of a potentially installed wasm-bindgen binary in the tool directory.
+    #[cfg(not(feature = "no-downloads"))]
     fn installed_bin_name(version: &str) -> String {
         let mut name = format!("wasm-bindgen-{version}");
         if cfg!(windows) {
@@ -251,15 +299,27 @@ impl WasmBindgen {
         name
     }
 
+    /// Get the name of a potentially installed wasm-bindgen binary in the path.
+    #[cfg(feature = "no-downloads")]
+    fn installed_bin_name(_version: &str) -> String {
+        "wasm-bindgen".to_string()
+    }
+
     /// Get the crates.io package name of wasm-bindgen-cli.
     fn cargo_bin_name(version: &str) -> String {
         format!("wasm-bindgen-cli@{version}")
     }
 
+    #[cfg(not(feature = "no-downloads"))]
     async fn final_binary(version: &str) -> Result<PathBuf, anyhow::Error> {
         let installed_name = Self::installed_bin_name(version);
         let install_dir = Self::install_dir().await?;
         Ok(install_dir.join(installed_name))
+    }
+
+    #[cfg(feature = "no-downloads")]
+    async fn final_binary(version: &str) -> Result<PathBuf, anyhow::Error> {
+        Ok(PathBuf::from("wasm-bindgen"))
     }
 
     fn downloaded_bin_name() -> &'static str {

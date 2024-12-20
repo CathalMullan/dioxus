@@ -24,7 +24,8 @@ node_modules/
 /packages/playwright-report/
 /packages/playwright/.cache/
 
-
 # ignore the output of tmps
 tmp/
 bundle/
+
+.direnv

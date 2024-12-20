@@ -1,69 +1,102 @@
 {
-  inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
-    flake-parts.url = "github:hercules-ci/flake-parts";
-    systems.url = "github:nix-systems/default";
+  description = "dioxus";
 
-    rust-overlay.url = "github:oxalica/rust-overlay";
-    # crane.url = "github:ipetkov/crane";
-    # crane.inputs.nixpkgs.follows = "nixpkgs";
+  inputs = {
+    nixpkgs = {
+      url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    };
+
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
   };
 
-  outputs = inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      systems = import inputs.systems;
+  # nix flake show
+  outputs =
+    {
+      nixpkgs,
+      rust-overlay,
+      ...
+    }:
 
-      perSystem = { config, self', pkgs, lib, system, ... }:
-        let
-          rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-            extensions = [
-              "rust-src"
-              "rust-analyzer"
-              "clippy"
-            ];
-          };
-          rustBuildInputs = [
-            pkgs.openssl
-            pkgs.libiconv
-            pkgs.pkg-config
-          ] ++ lib.optionals pkgs.stdenv.isLinux [
-            pkgs.glib
-            pkgs.gtk3
-            pkgs.libsoup_3
-            pkgs.webkitgtk_4_1
-            pkgs.xdotool
-          ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [
-            IOKit
-            Carbon
-            WebKit
-            Security
-            Cocoa
-          ]);
+    let
+      perSystem = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
 
-          # This is useful when building crates as packages
-          # Note that it does require a `Cargo.lock` which this repo does not have
-          # craneLib = (inputs.crane.mkLib pkgs).overrideToolchain rustToolchain;
-        in
-        {
-          _module.args.pkgs = import inputs.nixpkgs {
-            inherit system;
-            overlays = [
-              inputs.rust-overlay.overlays.default
-            ];
+      systemPkgs = perSystem (
+        system:
+
+        import nixpkgs {
+          inherit system;
+
+          overlays = [
+            (import rust-overlay)
+
+            (final: prev: {
+              rustToolchain = prev.rust-bin.stable."1.79.0".minimal.override {
+                targets = [ "wasm32-unknown-unknown" ];
+                extensions = [
+                  "clippy"
+                  "rust-analyzer"
+                  "rust-docs"
+                  "rust-src"
+                  "rustfmt"
+                ];
+              };
+            })
+          ];
+        }
+      );
+
+      perSystemPkgs = f: perSystem (system: f (systemPkgs.${system}));
+    in
+    {
+      devShells = perSystemPkgs (pkgs: {
+        # nix develop
+        default = pkgs.mkShell {
+          name = "dioxus-shell";
+
+          env = {
+            NIX_PATH = "nixpkgs=${nixpkgs.outPath}";
+
+            RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
+            CARGO_INCREMENTAL = "0";
+
+            OPENSSL_NO_VENDOR = "1";
           };
 
-          devShells.default = pkgs.mkShell {
-            name = "dioxus-dev";
-            buildInputs = rustBuildInputs;
-            nativeBuildInputs = [
-              # Add shell dependencies here
-              rustToolchain
-            ];
-            shellHook = ''
-              # For rust-analyzer 'hover' tooltips to work.
-              export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library";
-            '';
-          };
+          buildInputs = with pkgs; [
+            # Rust
+            rustToolchain
+            sccache
+            pkg-config
+            cacert
+            openssl
+            glib
+            gtk3
+            libsoup_3
+            webkitgtk_4_1
+            xdotool
+
+            # WASM
+            (wasm-bindgen-cli.override {
+              version = "0.2.99";
+              hash = "sha256-1AN2E9t/lZhbXdVznhTcniy+7ZzlaEp/gwLEAucs6EA=";
+              cargoHash = "sha256-DbwAh8RJtW38LJp+J9Ht8fAROK9OabaJ85D9C/Vkve4=";
+            })
+
+            # TOML
+            taplo
+
+            # Nix
+            nixfmt-rfc-style
+            nixd
+            nil
+          ];
         };
+      });
     };
 }
